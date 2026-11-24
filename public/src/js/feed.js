@@ -11,6 +11,31 @@ let objectUrls = [];
 
 
 // ================================================
+// FUNCIÓN GLOBAL DE SINCRONIZACIÓN MANUAL
+// ================================================
+
+window.manualSync = async function() {
+  console.log('[UTEQGram] Sincronización manual iniciada (global)');
+  alert('Iniciando sincronización manual...');
+  console.log('[UTEQGram] Estado de conexión:', navigator.onLine);
+  console.log('[UTEQGram] Supabase client disponible:', typeof supabaseClient !== 'undefined');
+
+  showToast('Sincronizando...');
+
+  try {
+    await syncPendingPosts();
+    await loadRemotePosts();
+    await loadLocalPosts();
+    showToast('Sincronización completada.');
+    alert('Sincronización completada');
+  } catch (error) {
+    console.error('[UTEQGram] Error en sincronización manual:', error);
+    alert('Error: ' + error.message);
+  }
+};
+
+
+// ================================================
 // INICIALIZAR FEED
 // ================================================
 
