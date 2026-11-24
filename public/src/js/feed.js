@@ -7,10 +7,15 @@
 const STATIC_IMAGE = './src/images/main-image.jpg';
 const MAX_IMAGE_DIMENSION = 1280;
 const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
+const AUTO_REFRESH_INTERVAL_MS = 5000;
 
 let isSyncing = false;
 let activeSyncPromise = null;
 let pendingResync = false;
+let activeRemoteLoadPromise = null;
+let realtimeChannel = null;
+let autoRefreshTimer = null;
+let lastRenderedSignature = null;
 let objectUrls = [];
 
 
@@ -554,6 +559,19 @@ async function loadLocalPosts() {
 // MOSTRAR PUBLICACIONES
 // ================================================
 
+function buildPostsSignature(posts) {
+  return posts.map(function (post) {
+    return [
+      post.id,
+      post.status || '',
+      post.title || '',
+      post.location || '',
+      post.image_url || '',
+      post.imageBlob instanceof Blob ? 'blob' : 'noblob'
+    ].join('|');
+  }).join(';;');
+}
+
 function renderPosts(posts) {
 
   const sharedMoments = document.getElementById(
@@ -561,6 +579,12 @@ function renderPosts(posts) {
   );
 
   if (!sharedMoments) return;
+
+  const signature = buildPostsSignature(posts);
+  if (signature === lastRenderedSignature) {
+    return;
+  }
+  lastRenderedSignature = signature;
 
   console.log('[UTEQGram] Renderizando', posts.length, 'publicaciones');
 
@@ -977,72 +1001,156 @@ async function loadRemotePosts() {
     return;
   }
 
-  try {
+  if (activeRemoteLoadPromise) {
+    return activeRemoteLoadPromise;
+  }
 
-    const { data, error } =
-      await supabaseClient
-        .from('posts')
-        .select('*')
-        .order('created_at', {
-          ascending: false
-        })
-        .limit(50);
+  activeRemoteLoadPromise = (async function () {
+    try {
 
-
-    if (error) {
-      throw error;
-    }
-
-
-    for (const remotePost of data) {
-
-      const localPost = await getData(
-        'posts',
-        remotePost.id
-      );
+      const { data, error } =
+        await supabaseClient
+          .from('posts')
+          .select('*')
+          .order('created_at', {
+            ascending: false
+          })
+          .limit(50);
 
 
-      if (
-        localPost &&
-        localPost.status === 'pending'
-      ) {
-        continue;
+      if (error) {
+        throw error;
       }
 
+      let hasChanges = false;
 
-      await writeData('posts', {
+      for (const remotePost of data) {
 
-        id: remotePost.id,
+        const pendingPost = await getData(
+          'sync-posts',
+          remotePost.id
+        );
 
-        title: remotePost.title,
+        if (pendingPost) {
+          continue;
+        }
 
-        location: remotePost.location,
+        const localPost = await getData(
+          'posts',
+          remotePost.id
+        );
 
-        image_url: remotePost.image_url,
+        if (
+          localPost &&
+          localPost.status === 'pending'
+        ) {
+          continue;
+        }
 
-        imagePath: null,
+        const isSameAsLocal =
+          localPost &&
+          localPost.title === remotePost.title &&
+          localPost.location === remotePost.location &&
+          localPost.image_url === remotePost.image_url &&
+          localPost.created_at === remotePost.created_at &&
+          localPost.status === 'sent';
 
-        imageBlob: null,
+        if (isSameAsLocal) {
+          continue;
+        }
 
-        created_at: remotePost.created_at,
+        await writeData('posts', {
 
-        status: 'sent'
+          id: remotePost.id,
 
-      });
+          title: remotePost.title,
+
+          location: remotePost.location,
+
+          image_url: remotePost.image_url,
+
+          imagePath: null,
+
+          imageBlob: null,
+
+          created_at: remotePost.created_at,
+
+          status: 'sent'
+
+        });
+
+        hasChanges = true;
+
+      }
+
+      if (hasChanges || lastRenderedSignature === null) {
+        await loadLocalPosts();
+      }
+
+    } catch (error) {
+
+      console.error(
+        '[UTEQGram] Error descargando publicaciones:',
+        error
+      );
+
+    } finally {
+
+      activeRemoteLoadPromise = null;
 
     }
+  })();
+
+  return activeRemoteLoadPromise;
+
+}
 
 
-    await loadLocalPosts();
+// ================================================
+// ACTUALIZACIÓN EN VIVO (REALTIME + POLLING)
+// ================================================
 
-  } catch (error) {
+function subscribeToRemotePosts() {
 
-    console.error(
-      '[UTEQGram] Error descargando publicaciones:',
-      error
-    );
-
+  if (
+    typeof supabaseClient === 'undefined' ||
+    typeof supabaseClient.channel !== 'function' ||
+    realtimeChannel
+  ) {
+    return;
   }
+
+  realtimeChannel = supabaseClient
+    .channel('posts-realtime')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'posts'
+      },
+      function (payload) {
+        console.log('[UTEQGram] Cambio en tiempo real detectado:', payload.eventType);
+        loadRemotePosts();
+      }
+    )
+    .subscribe(function (status) {
+      console.log('[UTEQGram] Estado de Realtime:', status);
+    });
+
+}
+
+function startAutoRefresh() {
+
+  if (autoRefreshTimer) {
+    return;
+  }
+
+  autoRefreshTimer = setInterval(function () {
+    if (navigator.onLine && document.visibilityState === 'visible') {
+      loadRemotePosts();
+    }
+  }, AUTO_REFRESH_INTERVAL_MS);
 
 }
 
@@ -1054,6 +1162,10 @@ async function loadRemotePosts() {
 async function initializePosts() {
 
   try {
+
+    subscribeToRemotePosts();
+
+    startAutoRefresh();
 
     await loadLocalPosts();
 
