@@ -5,8 +5,12 @@
 // ================================================
 
 const STATIC_IMAGE = './src/images/main-image.jpg';
+const MAX_IMAGE_DIMENSION = 1280;
+const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024;
 
 let isSyncing = false;
+let activeSyncPromise = null;
+let pendingResync = false;
 let objectUrls = [];
 
 
@@ -14,23 +18,52 @@ let objectUrls = [];
 // FUNCIÓN GLOBAL DE SINCRONIZACIÓN MANUAL
 // ================================================
 
-window.manualSync = async function() {
-  console.log('[UTEQGram] Sincronización manual iniciada (global)');
-  alert('Iniciando sincronización manual...');
-  console.log('[UTEQGram] Estado de conexión:', navigator.onLine);
-  console.log('[UTEQGram] Supabase client disponible:', typeof supabaseClient !== 'undefined');
+function closeDrawerIfOpen() {
+  const layout = document.querySelector('.mdl-layout');
+  const drawer = document.querySelector('.mdl-layout__drawer');
+
+  if (
+    layout &&
+    layout.MaterialLayout &&
+    drawer &&
+    drawer.classList.contains('is-visible')
+  ) {
+    layout.MaterialLayout.toggleDrawer();
+  }
+}
+
+window.manualSync = async function () {
+  console.log('[UTEQGram] Sincronización manual iniciada');
+  closeDrawerIfOpen();
+
+  if (!navigator.onLine) {
+    showToast('Sin conexión. Se sincronizará al reconectar.');
+    return;
+  }
 
   showToast('Sincronizando...');
 
   try {
-    await syncPendingPosts();
+    const syncResult = await syncPendingPosts();
     await loadRemotePosts();
     await loadLocalPosts();
-    showToast('Sincronización completada.');
-    alert('Sincronización completada');
+
+    if (syncResult && syncResult.failedCount > 0) {
+      const errorMsg = syncResult.lastError && syncResult.lastError.message
+        ? syncResult.lastError.message
+        : 'revisa tu conexión';
+      showToast('No se pudo sincronizar: ' + errorMsg);
+      return;
+    }
+
+    if (syncResult && syncResult.syncedCount > 0) {
+      showToast('Sincronización completada (' + syncResult.syncedCount + ').');
+    } else {
+      showToast('Todo está sincronizado.');
+    }
   } catch (error) {
     console.error('[UTEQGram] Error en sincronización manual:', error);
-    alert('Error: ' + error.message);
+    showToast('Error al sincronizar: ' + error.message);
   }
 };
 
@@ -135,20 +168,8 @@ function initializeFeed() {
         return;
       }
 
-      const allowedTypes = [
-        'image/jpeg',
-        'image/png',
-        'image/webp',
-        'image/gif'
-      ];
-
-      if (!allowedTypes.includes(imageFile.type)) {
-        showToast('Selecciona una imagen JPG, PNG, WEBP o GIF.');
-        return;
-      }
-
-      if (imageFile.size > 5 * 1024 * 1024) {
-        showToast('La imagen no debe superar los 5 MB.');
+      if (!isSupportedImageFile(imageFile)) {
+        showToast('Selecciona un archivo de imagen válido.');
         return;
       }
 
@@ -158,11 +179,20 @@ function initializeFeed() {
 
       try {
 
+        // Convertir/comprimir la imagen a un Blob en memoria para evitar
+        // fallos de IndexedDB en móviles y fotos mayores a 5 MB.
+        const preparedBlob = await prepareImageBlob(imageFile);
+
+        if (preparedBlob.size > MAX_UPLOAD_SIZE_BYTES) {
+          showToast('La imagen supera los 5 MB incluso tras comprimir.');
+          return;
+        }
+
         // Guardar primero en IndexedDB.
         await saveLocalPost({
           title: title,
           location: location,
-          imageBlob: imageFile
+          imageBlob: preparedBlob
         });
 
         form.reset();
@@ -177,7 +207,15 @@ function initializeFeed() {
 
         // Sincronizar si hay conexión.
         if (navigator.onLine) {
-          await syncPendingPosts();
+          const syncResult = await syncPendingPosts();
+          if (syncResult && syncResult.failedCount > 0) {
+            const msg = syncResult.lastError && syncResult.lastError.message
+              ? syncResult.lastError.message
+              : 'quedó pendiente para reintentar';
+            showToast('Guardada localmente, pero falló la subida: ' + msg);
+          } else if (syncResult && syncResult.syncedCount > 0) {
+            showToast('Publicación sincronizada.');
+          }
         }
 
       } catch (error) {
@@ -209,55 +247,35 @@ function initializeFeed() {
 
 
   // ==============================================
-  // RECUPERAR CONEXIÓN
+  // RECUPERAR CONEXIÓN O VOLVER A LA APP EN MÓVIL
   // ==============================================
 
-  window.addEventListener('online', async function () {
+  async function triggerForegroundSync(reason) {
+    if (!navigator.onLine) {
+      return;
+    }
 
-    console.log('[UTEQGram] Evento online detectado. Iniciando sincronización...');
+    console.log('[UTEQGram] Sincronización disparada por:', reason);
 
-    showToast('Conexión recuperada. Sincronizando...');
-
-    await syncPendingPosts();
-
+    const syncResult = await syncPendingPosts();
     await loadRemotePosts();
-
     await loadLocalPosts();
 
-    console.log('[UTEQGram] Sincronización completada.');
+    if (syncResult && syncResult.syncedCount > 0) {
+      showToast('Publicaciones sincronizadas (' + syncResult.syncedCount + ').');
+    }
+  }
 
+  window.addEventListener('online', function () {
+    showToast('Conexión recuperada. Sincronizando...');
+    triggerForegroundSync('online');
   });
 
-
-  // ==============================================
-  // BOTÓN MANUAL DE SINCRONIZACIÓN
-  // ==============================================
-
-  const syncNowButton = document.getElementById('sync-now');
-
-  console.log('[UTEQGram] Botón de sincronización encontrado:', !!syncNowButton);
-
-  if (syncNowButton) {
-    syncNowButton.addEventListener('click', async function () {
-      console.log('[UTEQGram] Botón de sincronización presionado');
-      alert('Iniciando sincronización manual...');
-      console.log('[UTEQGram] Estado de conexión:', navigator.onLine);
-      console.log('[UTEQGram] Supabase client disponible:', typeof supabaseClient !== 'undefined');
-
-      showToast('Sincronizando...');
-
-      try {
-        await syncPendingPosts();
-        await loadRemotePosts();
-        await loadLocalPosts();
-        showToast('Sincronización completada.');
-        alert('Sincronización completada');
-      } catch (error) {
-        console.error('[UTEQGram] Error en sincronización manual:', error);
-        alert('Error: ' + error.message);
-      }
-    });
-  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') {
+      triggerForegroundSync('visibilitychange');
+    }
+  });
 
 
   // ==============================================
@@ -331,11 +349,113 @@ function createPostId() {
     return window.crypto.randomUUID();
   }
 
-  return 'post-' +
-    Date.now() +
-    '-' +
-    Math.random().toString(16).slice(2);
+  if (
+    window.crypto &&
+    typeof window.crypto.getRandomValues === 'function'
+  ) {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
+    const hex = Array.from(bytes, function (b) {
+      return b.toString(16).padStart(2, '0');
+    }).join('');
+
+    return (
+      hex.slice(0, 8) + '-' +
+      hex.slice(8, 12) + '-' +
+      hex.slice(12, 16) + '-' +
+      hex.slice(16, 20) + '-' +
+      hex.slice(20)
+    );
+  }
+
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+
+}
+
+
+// ================================================
+// PROCESAR IMAGEN MÓVIL PARA INDEXEDDB
+// ================================================
+
+function isSupportedImageFile(file) {
+  if (!file) return false;
+  if (file.type && file.type.startsWith('image/')) {
+    return true;
+  }
+  return /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i.test(file.name || '');
+}
+
+function loadImageFromFile(file) {
+  return new Promise(function (resolve, reject) {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+
+    img.onload = function () {
+      URL.revokeObjectURL(objectUrl);
+      resolve(img);
+    };
+
+    img.onerror = function (err) {
+      URL.revokeObjectURL(objectUrl);
+      reject(err);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise(function (resolve) {
+    canvas.toBlob(function (blob) {
+      resolve(blob);
+    }, type, quality);
+  });
+}
+
+async function prepareImageBlob(file) {
+  if (file.type === 'image/gif' && file.size <= MAX_UPLOAD_SIZE_BYTES) {
+    const buffer = await file.arrayBuffer();
+    return new Blob([buffer], { type: 'image/gif' });
+  }
+
+  try {
+    const img = await loadImageFromFile(file);
+    const maxSide = Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height);
+    const scale = maxSide > MAX_IMAGE_DIMENSION ? MAX_IMAGE_DIMENSION / maxSide : 1;
+
+    const width = Math.max(1, Math.round((img.naturalWidth || img.width) * scale));
+    const height = Math.max(1, Math.round((img.naturalHeight || img.height) * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.drawImage(img, 0, 0, width, height);
+      let compressedBlob = await canvasToBlob(canvas, 'image/jpeg', 0.82);
+
+      if (compressedBlob && compressedBlob.size > MAX_UPLOAD_SIZE_BYTES) {
+        compressedBlob = await canvasToBlob(canvas, 'image/jpeg', 0.65);
+      }
+
+      if (compressedBlob && compressedBlob.size > 0) {
+        return compressedBlob;
+      }
+    }
+  } catch (error) {
+    console.warn('[UTEQGram] No se pudo recomprimir imagen, usando bytes originales:', error);
+  }
+
+  const fallbackBuffer = await file.arrayBuffer();
+  return new Blob([fallbackBuffer], { type: file.type || 'image/jpeg' });
 }
 
 
@@ -400,16 +520,16 @@ async function loadLocalPosts() {
 
   const postsMap = new Map();
 
-  // Siempre mostrar publicaciones pendientes de sincronización
-  if (syncPosts && Array.isArray(syncPosts)) {
-    syncPosts.forEach(function (post) {
+  // Mostrar publicaciones cacheadas localmente
+  if (posts && Array.isArray(posts)) {
+    posts.forEach(function (post) {
       postsMap.set(post.id, post);
     });
   }
 
-  // Con internet: mostrar también publicaciones ya sincronizadas
-  if (navigator.onLine && posts && Array.isArray(posts)) {
-    posts.forEach(function (post) {
+  // Las publicaciones pendientes tienen prioridad sobre la caché sincronizada
+  if (syncPosts && Array.isArray(syncPosts)) {
+    syncPosts.forEach(function (post) {
       postsMap.set(post.id, post);
     });
   }
@@ -556,9 +676,9 @@ function createPostCard(post) {
 
 async function syncPendingPosts() {
 
-  if (!navigator.onLine || isSyncing) {
-    console.log('[UTEQGram] No se puede sincronizar. onLine:', navigator.onLine, 'isSyncing:', isSyncing);
-    return;
+  if (!navigator.onLine) {
+    console.log('[UTEQGram] No se puede sincronizar sin conexión.');
+    return { syncedCount: 0, failedCount: 0, lastError: null };
   }
 
   if (typeof supabaseClient === 'undefined') {
@@ -567,64 +687,96 @@ async function syncPendingPosts() {
       '[UTEQGram] No se encontró supabaseClient.'
     );
 
-    return;
+    return {
+      syncedCount: 0,
+      failedCount: 1,
+      lastError: new Error('Cliente de Supabase no disponible.')
+    };
 
+  }
+
+  if (isSyncing && activeSyncPromise) {
+    pendingResync = true;
+    return activeSyncPromise;
   }
 
   isSyncing = true;
 
-  try {
+  activeSyncPromise = (async function () {
+    let syncedCount = 0;
+    let failedCount = 0;
+    let lastError = null;
 
-    const syncPosts = await readAllData('sync-posts');
+    try {
 
-    if (!syncPosts || !Array.isArray(syncPosts)) {
-      console.log('[UTEQGram] No hay publicaciones para sincronizar.');
-      return;
+      do {
+        pendingResync = false;
+
+        const syncPosts = await readAllData('sync-posts');
+
+        if (!syncPosts || !Array.isArray(syncPosts) || syncPosts.length === 0) {
+          console.log('[UTEQGram] No hay publicaciones para sincronizar.');
+          break;
+        }
+
+        console.log('[UTEQGram] Publicaciones pendientes de sincronización:', syncPosts.length);
+
+        for (const post of syncPosts) {
+
+          if (!navigator.onLine) {
+            console.log('[UTEQGram] Conexión perdida durante sincronización.');
+            break;
+          }
+
+          try {
+
+            console.log('[UTEQGram] Sincronizando publicación:', post.id);
+            await uploadPostToSupabase(post);
+            syncedCount += 1;
+            console.log('[UTEQGram] Publicación sincronizada exitosamente:', post.id);
+
+          } catch (error) {
+
+            failedCount += 1;
+            lastError = error;
+            console.error(
+              '[UTEQGram] Error sincronizando:',
+              post.id,
+              error
+            );
+
+          }
+
+        }
+
+      } while (pendingResync && navigator.onLine);
+
+      await loadLocalPosts();
+
+    } catch (error) {
+
+      failedCount += 1;
+      lastError = error;
+      console.error(
+        '[UTEQGram] Error en sincronización:',
+        error
+      );
+
+    } finally {
+
+      isSyncing = false;
+      activeSyncPromise = null;
+
     }
 
-    console.log('[UTEQGram] Publicaciones pendientes de sincronización:', syncPosts.length);
-    console.log('[UTEQGram] Supabase URL:', supabaseClient.supabaseUrl);
+    return {
+      syncedCount: syncedCount,
+      failedCount: failedCount,
+      lastError: lastError
+    };
+  })();
 
-
-    for (const post of syncPosts) {
-
-      if (!navigator.onLine) {
-        console.log('[UTEQGram] Conexión perdida durante sincronización.');
-        break;
-      }
-
-      try {
-
-        console.log('[UTEQGram] Sincronizando publicación:', post.id);
-        await uploadPostToSupabase(post);
-        console.log('[UTEQGram] Publicación sincronizada exitosamente:', post.id);
-
-      } catch (error) {
-
-        console.error(
-          '[UTEQGram] Error sincronizando:',
-          post.id,
-          error
-        );
-
-      }
-
-    }
-
-    await loadLocalPosts();
-
-  } catch (error) {
-
-    console.error(
-      '[UTEQGram] Error en sincronización:',
-      error
-    );
-
-  } finally {
-
-    isSyncing = false;
-
-  }
+  return activeSyncPromise;
 
 }
 
@@ -643,7 +795,11 @@ function getImageExtension(mimeType) {
 
     'image/webp': 'webp',
 
-    'image/gif': 'gif'
+    'image/gif': 'gif',
+
+    'image/heic': 'heic',
+
+    'image/heif': 'heif'
 
   };
 
@@ -659,7 +815,6 @@ function getImageExtension(mimeType) {
 async function uploadPostToSupabase(post) {
 
   console.log('[UTEQGram] uploadPostToSupabase iniciado para:', post.id);
-  alert('Subiendo publicación: ' + post.title);
 
   let imageUrl = post.image_url;
 
@@ -670,15 +825,15 @@ async function uploadPostToSupabase(post) {
 
     console.log('[UTEQGram] Subiendo imagen a Supabase Storage...');
 
-    if (!(post.imageBlob instanceof Blob)) {
+    if (!(post.imageBlob instanceof Blob) || post.imageBlob.size === 0) {
 
-      throw new Error('No se encontró la imagen.');
+      throw new Error('No se encontró una imagen válida para subir.');
 
     }
 
-    const extension = getImageExtension(
-      post.imageBlob.type
-    );
+    const contentType = post.imageBlob.type || 'image/jpeg';
+
+    const extension = getImageExtension(contentType);
 
     const imagePath = post.imagePath ||
       'posts/' + post.id + '.' + extension;
@@ -688,6 +843,11 @@ async function uploadPostToSupabase(post) {
     // Reintentar hasta 3 veces con delay de 2 segundos
     let uploadError = null;
     for (let i = 0; i < 3; i++) {
+      if (!navigator.onLine) {
+        uploadError = new Error('Sin conexión durante la subida.');
+        break;
+      }
+
       try {
         const result = await supabaseClient.storage
           .from('post-images')
@@ -695,15 +855,15 @@ async function uploadPostToSupabase(post) {
             imagePath,
             post.imageBlob,
             {
-              contentType: post.imageBlob.type,
+              contentType: contentType,
               upsert: true
             }
           );
 
         if (result.error) {
           uploadError = result.error;
-          console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s... Error:`, result.error);
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          console.log('[UTEQGram] Intento ' + (i + 1) + ' fallido. Error:', result.error);
+          await new Promise(function (resolve) { setTimeout(resolve, 2000); });
         } else {
           uploadError = null;
           console.log('[UTEQGram] Imagen subida exitosamente');
@@ -711,14 +871,13 @@ async function uploadPostToSupabase(post) {
         }
       } catch (error) {
         uploadError = error;
-        console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s... Error:`, error);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        console.log('[UTEQGram] Intento ' + (i + 1) + ' fallido. Error:', error);
+        await new Promise(function (resolve) { setTimeout(resolve, 2000); });
       }
     }
 
     if (uploadError) {
       console.error('[UTEQGram] Error al subir imagen:', uploadError);
-      alert('Error al subir imagen: ' + uploadError.message);
       throw uploadError;
     }
 
@@ -735,9 +894,8 @@ async function uploadPostToSupabase(post) {
 
     post.image_url = imageUrl;
 
-    await writeData('posts', post);
-
-    console.log('[UTEQGram] Publicación guardada en posts localmente');
+    // Guardar image_url en sync-posts para evitar re-subir la imagen si falla la BD
+    await writeData('sync-posts', post);
 
   }
 
@@ -776,7 +934,6 @@ async function uploadPostToSupabase(post) {
 
   if (databaseError) {
     console.error('[UTEQGram] Error en base de datos:', databaseError);
-    alert('Error en base de datos: ' + databaseError.message);
     throw databaseError;
   }
 
@@ -785,9 +942,16 @@ async function uploadPostToSupabase(post) {
 
   // MARCAR COMO PUBLICADO Y MOVER DE SYNC-POSTS A POSTS
 
-  post.status = 'sent';
-
-  await writeData('posts', post);
+  await writeData('posts', {
+    id: post.id,
+    title: post.title,
+    location: post.location,
+    image_url: imageUrl,
+    imagePath: post.imagePath || null,
+    imageBlob: null,
+    created_at: post.created_at,
+    status: 'sent'
+  });
 
   await deleteItemFromData('sync-posts', post.id);
 
@@ -795,8 +959,6 @@ async function uploadPostToSupabase(post) {
     '[UTEQGram] Publicación sincronizada y movida a posts:',
     post.id
   );
-
-  alert('Publicación sincronizada exitosamente');
 
 }
 
