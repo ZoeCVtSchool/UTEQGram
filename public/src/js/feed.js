@@ -658,12 +658,17 @@ function getImageExtension(mimeType) {
 
 async function uploadPostToSupabase(post) {
 
+  console.log('[UTEQGram] uploadPostToSupabase iniciado para:', post.id);
+  alert('Subiendo publicación: ' + post.title);
+
   let imageUrl = post.image_url;
 
 
   // SUBIR IMAGEN A SUPABASE STORAGE
 
   if (!imageUrl) {
+
+    console.log('[UTEQGram] Subiendo imagen a Supabase Storage...');
 
     if (!(post.imageBlob instanceof Blob)) {
 
@@ -677,6 +682,8 @@ async function uploadPostToSupabase(post) {
 
     const imagePath = post.imagePath ||
       'posts/' + post.id + '.' + extension;
+
+    console.log('[UTEQGram] Ruta de imagen:', imagePath);
 
     // Reintentar hasta 3 veces con delay de 2 segundos
     let uploadError = null;
@@ -695,20 +702,23 @@ async function uploadPostToSupabase(post) {
 
         if (result.error) {
           uploadError = result.error;
-          console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s...`);
+          console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s... Error:`, result.error);
           await new Promise(resolve => setTimeout(resolve, 2000));
         } else {
           uploadError = null;
+          console.log('[UTEQGram] Imagen subida exitosamente');
           break;
         }
       } catch (error) {
         uploadError = error;
-        console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s...`);
+        console.log(`[UTEQGram] Intento ${i + 1} fallido. Reintentando en 2s... Error:`, error);
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
 
     if (uploadError) {
+      console.error('[UTEQGram] Error al subir imagen:', uploadError);
+      alert('Error al subir imagen: ' + uploadError.message);
       throw uploadError;
     }
 
@@ -727,10 +737,14 @@ async function uploadPostToSupabase(post) {
 
     await writeData('posts', post);
 
+    console.log('[UTEQGram] Publicación guardada en posts localmente');
+
   }
 
 
   // GUARDAR EN TABLA POSTS DE SUPABASE
+
+  console.log('[UTEQGram] Guardando en tabla posts de Supabase...');
 
   const postToSave = {
 
@@ -746,6 +760,8 @@ async function uploadPostToSupabase(post) {
 
   };
 
+  console.log('[UTEQGram] Datos a guardar:', postToSave);
+
 
   const { error: databaseError } =
     await supabaseClient
@@ -759,8 +775,12 @@ async function uploadPostToSupabase(post) {
 
 
   if (databaseError) {
+    console.error('[UTEQGram] Error en base de datos:', databaseError);
+    alert('Error en base de datos: ' + databaseError.message);
     throw databaseError;
   }
+
+  console.log('[UTEQGram] Guardado en Supabase exitosamente');
 
 
   // MARCAR COMO PUBLICADO Y MOVER DE SYNC-POSTS A POSTS
@@ -775,6 +795,8 @@ async function uploadPostToSupabase(post) {
     '[UTEQGram] Publicación sincronizada y movida a posts:',
     post.id
   );
+
+  alert('Publicación sincronizada exitosamente');
 
 }
 
