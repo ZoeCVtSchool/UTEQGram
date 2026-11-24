@@ -210,14 +210,27 @@ function initializeFeed() {
 
   const syncNowButton = document.getElementById('sync-now');
 
+  console.log('[UTEQGram] Botón de sincronización encontrado:', !!syncNowButton);
+
   if (syncNowButton) {
     syncNowButton.addEventListener('click', async function () {
-      console.log('[UTEQGram] Sincronización manual iniciada.');
+      console.log('[UTEQGram] Botón de sincronización presionado');
+      alert('Iniciando sincronización manual...');
+      console.log('[UTEQGram] Estado de conexión:', navigator.onLine);
+      console.log('[UTEQGram] Supabase client disponible:', typeof supabaseClient !== 'undefined');
+
       showToast('Sincronizando...');
-      await syncPendingPosts();
-      await loadRemotePosts();
-      await loadLocalPosts();
-      showToast('Sincronización completada.');
+
+      try {
+        await syncPendingPosts();
+        await loadRemotePosts();
+        await loadLocalPosts();
+        showToast('Sincronización completada.');
+        alert('Sincronización completada');
+      } catch (error) {
+        console.error('[UTEQGram] Error en sincronización manual:', error);
+        alert('Error: ' + error.message);
+      }
     });
   }
 
