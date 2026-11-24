@@ -1,6 +1,6 @@
 
-var CACHE_STATIC_NAME = 'static-v29';
-var CACHE_DYNAMIC_NAME = 'dynamic-v29';
+var CACHE_STATIC_NAME = 'static-v30';
+var CACHE_DYNAMIC_NAME = 'dynamic-v30';
 
 var STATIC_FILES = [
   '/',
@@ -25,7 +25,7 @@ var STATIC_FILES = [
 
 // INSTALACIÓN
 self.addEventListener('install', function(event) {
-  console.log('[SW] Instalando Service Worker v29...');
+  console.log('[SW] Instalando Service Worker v30...');
 
   event.waitUntil(
     caches.open(CACHE_STATIC_NAME)
