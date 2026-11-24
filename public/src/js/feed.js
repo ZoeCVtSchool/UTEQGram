@@ -205,6 +205,24 @@ function initializeFeed() {
 
 
   // ==============================================
+  // BOTÓN MANUAL DE SINCRONIZACIÓN
+  // ==============================================
+
+  const syncNowButton = document.getElementById('sync-now');
+
+  if (syncNowButton) {
+    syncNowButton.addEventListener('click', async function () {
+      console.log('[UTEQGram] Sincronización manual iniciada.');
+      showToast('Sincronizando...');
+      await syncPendingPosts();
+      await loadRemotePosts();
+      await loadLocalPosts();
+      showToast('Sincronización completada.');
+    });
+  }
+
+
+  // ==============================================
   // PÉRDIDA DE CONEXIÓN
   // ==============================================
 
@@ -501,6 +519,7 @@ function createPostCard(post) {
 async function syncPendingPosts() {
 
   if (!navigator.onLine || isSyncing) {
+    console.log('[UTEQGram] No se puede sincronizar. onLine:', navigator.onLine, 'isSyncing:', isSyncing);
     return;
   }
 
@@ -526,17 +545,21 @@ async function syncPendingPosts() {
     }
 
     console.log('[UTEQGram] Publicaciones pendientes de sincronización:', syncPosts.length);
+    console.log('[UTEQGram] Supabase URL:', supabaseClient.supabaseUrl);
 
 
     for (const post of syncPosts) {
 
       if (!navigator.onLine) {
+        console.log('[UTEQGram] Conexión perdida durante sincronización.');
         break;
       }
 
       try {
 
+        console.log('[UTEQGram] Sincronizando publicación:', post.id);
         await uploadPostToSupabase(post);
+        console.log('[UTEQGram] Publicación sincronizada exitosamente:', post.id);
 
       } catch (error) {
 
